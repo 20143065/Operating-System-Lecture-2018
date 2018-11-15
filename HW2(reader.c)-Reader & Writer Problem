@@ -1,0 +1,277 @@
+// reader.c
+
+#include <sys/types.h>
+#include <sys/ipc.h>
+#include <sys/sem.h>
+#include <errno.h>
+#include <stdio.h>
+#include <unistd.h>
+#include <stdlib.h>
+#include <time.h>
+#define SEMPERM 0600
+#define TRUE 1
+#define FALSE 0
+typedef union _semun {
+             int val;
+             struct semid_ds *buf;
+             ushort *array;
+             }semun;
+int initsem (key_t semkey, int n) {
+   int status = 0, semid;
+   if ((semid = semget (semkey, 1, SEMPERM | IPC_CREAT | IPC_EXCL)) == ­1)
+   {
+       if (errno == EEXIST)
+         semid = semget (semkey, 1, 0);
+   }
+   else
+   {
+       semun arg;
+       arg.val = n;
+       status = semctl(semid, 0, SETVAL, arg);
+   }
+   if (semid == ­1 || status == ­1)
+   {
+       perror("initsem failed");
+       return (­1);
+   }
+   return (semid);
+}
+int p (int semid) {
+   struct sembuf p_buf;
+   p_buf.sem_num = 0;
+   p_buf.sem_op = ­1;
+   p_buf.sem_flg = SEM_UNDO;
+   if (semop(semid, &p_buf, 1) == ­1)
+   {
+      printf("p(semid) failed");
+      exit(1);
+   }
+   return (0);
+}
+int v (int semid) {
+   struct sembuf v_buf;
+   v_buf.sem_num = 0;
+   v_buf.sem_op = 1;
+   v_buf.sem_flg = SEM_UNDO;
+   if (semop(semid, &v_buf, 1) == ­1)
+   {
+      printf("v(semid) failed");
+      exit(1);
+   }
+   return (0);
+}
+// Shared variable by file
+void Store(char *fileVar, int i) {
+   // fileVar 화일 끝에    i 값을 append 한다.
+   FILE *fp;
+   fp = fopen(fileVar, "a");
+   if (fp == NULL)
+      printf("실패­종료\n");
+   fprintf(fp, "%d\n", i);
+   fclose(fp);
+}
+void reset(char *fileVar) {
+   if(access(fileVar, F_OK) == ­1)
+   {
+      FILE *fp;
+      int num = 0;
+      fp = fopen(fileVar, "wt");
+      if (fp == NULL)
+         printf("실패­종료\n");
+      fprintf(fp, "                    %d\n", num);
+      fclose(fp);
+   }
+}
+int Load(char *fileVar) {
+   // fileVar 화일의 마지막 값을 읽어 온다         .
+   FILE *fp;
+   int num;
+   fp = fopen(fileVar, "r");
+   while (1) {
+      fscanf(fp, "%d", &num);
+      if (feof(fp))break;
+   }
+   fclose(fp);
+   return num;
+}
+void add(char *fileVar, int i, int pid) {
+   // fileVar 화일의 마지막 값을 읽어서        i 를 더한 후에 이를 끝에          append 한다.
+   FILE *fp;
+   int num;
+   int pidd;
+   fp = fopen(fileVar, "r");
+   while (1) {
+      fscanf(fp, "%d", &num);
+      if (feof(fp))break;
+   }
+   fclose(fp);
+   num = num + i;
+   fp = fopen(fileVar, "a");
+   if (fp == NULL)
+      printf("실패­종료\n");
+    time_t ltime;
+    struct tm *today;
+    time(&ltime);
+    today = localtime(&ltime);
+    fprintf(fp, "%02d %02d %02d    %d    %d\n",
+               today­>tm_hour,
+               today­>tm_min,
+               today­>tm_sec
+               , pid, num);
+   fclose(fp);
+}
+void sub(char *fileVar, int i, int pid) {
+   // fileVar 화일의 마지막 값을 읽어서        i 를 뺀 후에 이를 끝에          append 한다.
+   FILE *fp;
+   int num;
+   int pidd;
+   fp = fopen(fileVar, "r");
+   while (1) {
+      fscanf(fp, "%d", &num);
+      if (feof(fp))break;
+   }
+   fclose(fp);
+   num = num ­ i;
+   fp = fopen(fileVar, "a");
+   if (fp == NULL)
+      printf("실패­종료\n");
+    time_t ltime;
+    struct tm *today;
+    time(&ltime);
+    today = localtime(&ltime);
+   fprintf(fp, "%02d %02d %02d    %d    %d\n",
+               today­>tm_hour,
+               today­>tm_min,
+               today­>tm_sec
+               , pid, num);
+   fclose(fp);
+}
+// Class Lock
+typedef struct _lock {
+   int semid;
+} Lock;
+void initLock(Lock *l, key_t semkey) {
+   if ((l­>semid = initsem(semkey,1)) < 0)
+   // 세마포를 연결한다.(없으면 초기값을    1 로 주면서 새로 만들어서 연결한다         .)
+      exit(1);
+}
+void Acquire(Lock *l) {
+   p(l­>semid);
+}
+void Release(Lock *l) {
+   v(l­>semid);
+}
+// Class CondVar
+typedef struct _cond {
+   int semid;
+   char *queueLength;
+} CondVar;
+void initCondVar(CondVar *c, key_t semkey, char *queueLength) {
+   c­>queueLength = queueLength;
+   reset(c­>queueLength); // queueLength=0
+   if ((c­>semid = initsem(semkey,0)) < 0)
+   // 세마포를 연결한다.(없으면 초기값을    0 로 주면서 새로 만들어서 연결한다         .)
+      exit(1);
+}
+// 큐에 추가하고 큐의 길이를        1 늘린다.
+void Wait(CondVar *c, Lock *lock, int pid)
+{
+  add(c­>queueLength, 1, pid);
+  Release(lock);
+  int sem=0;
+  sem = c­>semid;
+  p(sem);
+  Acquire(lock);
+}
+// 큐에서 하나만 가져온다     .(길이를 1 줄인다)
+void Signal(CondVar *c, int pid) {
+  if(Load(c­>queueLength) > 0)
+  {
+    v(c­>semid);
+    sub(c­>queueLength, 1, pid);
+  }
+}
+// 큐에 있는 모든 것을 가져온다         .(길이를 0 으로 만든다)
+void Broadcast(CondVar *c, int pid) {
+  while(Load(c­>queueLength) > 0)
+  {
+    v(c­>semid);
+    sub(c­>queueLength, 1, pid);
+  }
+}
+void main(int argc, char *argv[]) {
+  pid_t pid;
+  pid = getpid();
+  key_t semkey = 0x200;
+  key_t readkey = 0x300;
+  key_t writekey = 0x400;
+  // 현재 시각 구하기    
+  time_t ltime;
+  struct tm *today;
+  time(&ltime);
+  today = localtime(&ltime);
+  // 프로세스를 실행하기 전 현재 시각 출력          
+  printf("process %d Start time : %04d­%02d­%02d %02d:%02d:%02d\n",
+          pid,
+          today­>tm_year + 1900,
+          today­>tm_mon + 1,
+          today­>tm_mday,
+          today­>tm_hour,
+          today­>tm_min,
+          today­>tm_sec);
+   int semid;
+   Lock lock;
+   CondVar OkToRead;
+   CondVar OkToWrite;
+   // Make Condition Variable
+   char AR_name[]="ARdata.txt";
+   reset(AR_name);
+   char AW_name[]="AWdata.txt";
+   reset(AW_name);
+   char WR_name[]="WRdata.txt";
+   reset(WR_name);
+   char WW_name[]="WWdata.txt";
+   reset(WW_name);
+   char Queue_name[]="Queue.txt";
+   // 첫 번째    parameter 는 시작하기 전 지연을 의미한다        
+   printf("process %d : delay for %d seconds", pid, atoi(argv[1]));
+   sleep(atoi(argv[1]));
+   initLock(&lock,semkey);
+   initCondVar(&OkToRead, readkey, Queue_name);
+   initCondVar(&OkToWrite, writekey, Queue_name);
+   printf("\nprocess %d : before critical section\n", pid);
+   Acquire(&lock);   // lock.Acquire()
+   // 현재 활동중인    Writer 나 기다리고 있는      Writer 가 있다면 대기    
+   while(Load(AW_name) + Load(WW_name) > 0) {
+     add(WR_name, 1, pid);
+      Wait(&OkToRead, &lock, pid);
+     sub(WR_name, 1, pid);
+   }
+   add(AR_name, 1, pid);
+   Release(&lock);
+   printf("process %d : in critical section\n",pid);
+// 두 번째    parameter 는 Critical 섹션에서의 실행 시간을 의미한다      
+   printf("process %d : reading for %d seconds\n", pid, atoi(argv[2]));
+   sleep(atoi(argv[2]));
+    // 화일에서 읽어서    1 더하기
+   printf("process %d : leaving critical section\n", pid);
+   Acquire(&lock);   // lock.Acquire()
+   sub(AR_name, 1, pid);
+   // 활동중인 Reader 이 없고 기다리고 있는        Writer 가 있을때
+   if(Load(AR_name)==0 && Load(WW_name)>0)
+   {
+     Signal(&OkToWrite, pid);
+   }
+   Release(&lock);   // lock.Release()
+   printf("process %d : exiting\n",pid);
+   // 종료 시각
+   printf("process %d End time : %04d­%02d­%02d %02d:%02d:%02d\n",
+           pid,
+           today­>tm_year + 1900,
+           today­>tm_mon + 1,
+           today­>tm_mday,
+           today­>tm_hour,
+           today­>tm_min,
+           today­>tm_sec);
+   exit(0);
+}
